@@ -7,3 +7,8 @@
 # editor/clangd
 compile_commands.json
 .cache/
+
+# makepkg output
+/pkg/
+/src/
+*.pkg.tar.*
