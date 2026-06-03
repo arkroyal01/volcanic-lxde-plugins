@@ -1,0 +1,9 @@
+# build output
+/build/
+*.o
+*.so
+*.la
+
+# editor/clangd
+compile_commands.json
+.cache/
