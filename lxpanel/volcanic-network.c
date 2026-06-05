@@ -481,7 +481,13 @@ static void popup_show(NetPlugin *np)
                      G_CALLBACK(popup_focus_out), np);
 
     gtk_widget_show_all(np->popup);
-    lxpanel_plugin_adjust_popup_position(np->popup, np->button);
+    /* position under the panel icon. Use *_popup_set_position_helper (the one
+       the lxpanel binary actually exports) -- adjust_popup_position is declared
+       in the header but absent from the binary, which fails our dlopen. */
+    gint px = 0, py = 0;
+    lxpanel_plugin_popup_set_position_helper(np->panel, np->button,
+                                             np->popup, &px, &py);
+    gtk_window_move(GTK_WINDOW(np->popup), px, py);
     gtk_window_present(GTK_WINDOW(np->popup));
 
     /* kick a fresh scan; results arrive via AP add/remove signals */
