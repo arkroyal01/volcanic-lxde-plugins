@@ -194,7 +194,12 @@ static NMConnection *make_wifi_conn(NMAccessPoint *ap, const char *psk)
         NMSettingWirelessSecurity *ss =
             (NMSettingWirelessSecurity *) nm_setting_wireless_security_new();
         g_object_set(ss, NM_SETTING_WIRELESS_SECURITY_KEY_MGMT, "wpa-psk",
-                         NM_SETTING_WIRELESS_SECURITY_PSK, psk, NULL);
+                         NM_SETTING_WIRELESS_SECURITY_PSK, psk,
+                         /* system-wide: NM stores the secret on disk
+                            (psk-flags=NONE). A per-user encrypted store via a
+                            libsecret/Secret-Service agent is backlog. */
+                         NM_SETTING_WIRELESS_SECURITY_PSK_FLAGS,
+                         NM_SETTING_SECRET_FLAG_NONE, NULL);
         nm_connection_add_setting(c, NM_SETTING(ss));
     }
     g_free(ssid);
@@ -234,6 +239,27 @@ static gchar *ask_password(NetPlugin *np, const char *ssid)
     return out;
 }
 
+/* Deferred connect: after committing a converted (now system-stored)
+   connection, activate it. Carries the AP path across the async commit. */
+typedef struct { NetPlugin *np; NMRemoteConnection *conn; gchar *apath; } ConnectCtx;
+
+static void commit_then_activate(GObject *src, GAsyncResult *res, gpointer data)
+{
+    ConnectCtx *c = data;
+    GError *err = NULL;
+    nm_remote_connection_commit_changes_finish(NM_REMOTE_CONNECTION(src), res, &err);
+    if (err) {
+        report_error(_("Could not save password"), err);
+        g_clear_error(&err);
+    } else {
+        nm_client_activate_connection_async(c->np->client, NM_CONNECTION(c->conn),
+            NM_DEVICE(c->np->wifi), c->apath, NULL, activate_done, c->np);
+    }
+    g_object_unref(c->conn);
+    g_free(c->apath);
+    g_free(c);
+}
+
 static void on_ap_clicked(GtkWidget *w, gpointer data)
 {
     NetPlugin     *np = g_object_get_data(G_OBJECT(w), "np");
@@ -254,8 +280,45 @@ static void on_ap_clicked(GtkWidget *w, gpointer data)
     popup_hide(np);
 
     if (saved) {
-        nm_client_activate_connection_async(np->client, NM_CONNECTION(saved),
-            NM_DEVICE(np->wifi), apath, NULL, activate_done, np);
+        NMSettingWirelessSecurity *sec =
+            nm_connection_get_setting_wireless_security(NM_CONNECTION(saved));
+        NMSettingSecretFlags flags = sec
+            ? nm_setting_wireless_security_get_psk_flags(sec)
+            : NM_SETTING_SECRET_FLAG_NONE;
+
+        if (ap_is_secured(ap) && flags != NM_SETTING_SECRET_FLAG_NONE) {
+            /* Secret is agent-owned/not-saved, but we run no agent yet. Prompt
+               once and convert this connection to system-stored, then connect.
+               (Per-user encrypted storage via a Secret-Service agent: backlog.) */
+            gchar *ssid = ap_ssid_str(ap);
+            gchar *psk  = ask_password(np, ssid);
+            g_free(ssid);
+            if (!psk)
+                return;                 /* cancelled */
+            if (!sec) {
+                sec = (NMSettingWirelessSecurity *)
+                          nm_setting_wireless_security_new();
+                g_object_set(sec, NM_SETTING_WIRELESS_SECURITY_KEY_MGMT,
+                             "wpa-psk", NULL);
+                nm_connection_add_setting(NM_CONNECTION(saved), NM_SETTING(sec));
+                sec = nm_connection_get_setting_wireless_security(
+                          NM_CONNECTION(saved));
+            }
+            g_object_set(sec, NM_SETTING_WIRELESS_SECURITY_PSK, psk,
+                         NM_SETTING_WIRELESS_SECURITY_PSK_FLAGS,
+                         NM_SETTING_SECRET_FLAG_NONE, NULL);
+            g_free(psk);
+
+            ConnectCtx *ctx = g_new0(ConnectCtx, 1);
+            ctx->np    = np;
+            ctx->conn  = g_object_ref(saved);
+            ctx->apath = g_strdup(apath);
+            nm_remote_connection_commit_changes_async(saved, TRUE, NULL,
+                                                      commit_then_activate, ctx);
+        } else {
+            nm_client_activate_connection_async(np->client, NM_CONNECTION(saved),
+                NM_DEVICE(np->wifi), apath, NULL, activate_done, np);
+        }
         return;
     }
 
