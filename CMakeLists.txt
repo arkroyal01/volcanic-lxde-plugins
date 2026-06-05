@@ -9,3 +9,4 @@ include(GNUInstallDirs)
 
 add_subdirectory(lxhotkey)
 add_subdirectory(lxpanel)
+add_subdirectory(volcanic-control)

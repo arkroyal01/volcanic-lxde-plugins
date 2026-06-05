@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Volcanic Control Center
+GenericName=Settings
+Comment=Central hub for system and desktop settings
+Exec=volcanic-control
+Icon=preferences-system
+Terminal=false
+Categories=Settings;System;
+Keywords=settings;preferences;control;configuration;system;
