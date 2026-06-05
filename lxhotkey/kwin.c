@@ -1,5 +1,5 @@
 /*
- * lxhotkey WM backend plugin for KWin (sonic-win / kwin_x11).
+ * lxhotkey WM backend plugin for KWin (Volcanic / kwin_x11).
  *
  * Bridges LXDE's lxhotkey editor to KWin's global shortcuts, which live in
  * ~/.config/kglobalshortcutsrc under the [kwin] component in the format:

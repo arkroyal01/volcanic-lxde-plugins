@@ -1,6 +1,6 @@
-# sonic-lxde-plugins
+# volcanic-lxde-plugins
 
-Small LXDE glue plugins for running [sonic-win](https://github.com/Sonic-DE/sonic-win)
+Small LXDE glue plugins for running [Volcanic](https://github.com/arkroyal01/volcanic)
 (KWin/X11) as the window manager under an LXDE session — filling the gaps LXDE
 leaves when its usual Openbox WM is swapped for kwin_x11.
 
@@ -9,7 +9,7 @@ leaves when its usual Openbox WM is swapped for kwin_x11.
 | Subdir | Plugin | What it does |
 |---|---|---|
 | `lxhotkey/` | `kwin.so` | lxhotkey WM backend for KWin. Lets LXDE's hotkey editor (`lxhotkey`) read/edit KWin's global shortcuts, clearing the *"Could not find a plugin for window manager KWin"* error. |
-| `lxpanel/` | _(planned)_ | `sonic-overview`, `sonic-power`, `sonic-volume` panel widgets. |
+| `lxpanel/` | _(planned)_ | `volcanic-overview`, `volcanic-power`, `volcanic-volume` panel widgets. |
 
 ## lxhotkey/kwin
 
