@@ -60,15 +60,65 @@ static gboolean ap_is_secured(NMAccessPoint *ap)
     return (f & NM_802_11_AP_FLAGS_PRIVACY) || wpa || rsn;
 }
 
-static const char *strength_icon(guint8 s, gboolean secured)
+/* Per-strength icon-name fallback chains -- the first name the active theme
+   actually has wins. Covers breeze (signal-* in status/, plus connected-NN),
+   freedesktop/Adwaita (signal-*), oxygen, and NM's own nm-signal-* set, with a
+   generic "network-wireless" last so something always renders. */
+static const char *const *strength_names(guint8 s)
 {
-    /* icon-theme names shipped by NetworkManager / breeze-icons */
-    if (s >= 80) return "network-wireless-signal-excellent";
-    if (s >= 55) return "network-wireless-signal-good";
-    if (s >= 30) return "network-wireless-signal-ok";
-    if (s >= 5)  return "network-wireless-signal-weak";
-    (void) secured;
-    return "network-wireless-signal-none";
+    static const char *excellent[] = {
+        "network-wireless-signal-excellent", "network-wireless-connected-100",
+        "network-wireless-100", "nm-signal-100", "network-wireless", NULL };
+    static const char *good[] = {
+        "network-wireless-signal-good", "network-wireless-connected-75",
+        "network-wireless-80", "nm-signal-75", "network-wireless", NULL };
+    static const char *okk[] = {
+        "network-wireless-signal-ok", "network-wireless-connected-50",
+        "network-wireless-60", "nm-signal-50", "network-wireless", NULL };
+    static const char *weak[] = {
+        "network-wireless-signal-weak", "network-wireless-connected-25",
+        "network-wireless-40", "nm-signal-25", "network-wireless", NULL };
+    static const char *none_[] = {
+        "network-wireless-signal-none", "network-wireless-connected-00",
+        "network-wireless-20", "nm-signal-0", "network-wireless", NULL };
+    if (s >= 80) return excellent;
+    if (s >= 55) return good;
+    if (s >= 30) return okk;
+    if (s >= 5)  return weak;
+    return none_;
+}
+
+/* First name in the chain that the current icon theme actually provides. */
+static const char *best_icon(const char *const *names)
+{
+    GtkIconTheme *t = gtk_icon_theme_get_default();
+    for (int i = 0; names[i]; i++)
+        if (gtk_icon_theme_has_icon(t, names[i]))
+            return names[i];
+    return names[0];
+}
+
+/* A GtkImage rendering the first available name from a chain (theme-agnostic). */
+static GtkWidget *image_from_names(const char *const *names, GtkIconSize size)
+{
+    GIcon     *gi  = g_themed_icon_new_from_names((char **) names, -1);
+    GtkWidget *img = gtk_image_new_from_gicon(gi, size);
+    g_object_unref(gi);
+    return img;
+}
+
+static const char *icon_disconnected(void)
+{
+    static const char *n[] = { "network-wireless-disconnected",
+        "network-wireless-offline", "network-wireless-0", "network-wireless", NULL };
+    return best_icon(n);
+}
+
+static const char *icon_disabled(void)
+{
+    static const char *n[] = { "network-wireless-disabled", "network-wireless-off",
+        "network-wireless-hardware-disabled", "network-wireless", NULL };
+    return best_icon(n);
 }
 
 /* Find a saved connection whose SSID matches the AP. Returns a borrowed ref. */
@@ -95,26 +145,26 @@ static NMRemoteConnection *saved_conn_for_ap(NetPlugin *np, NMAccessPoint *ap)
 
 static void update_icon(NetPlugin *np)
 {
-    const char *icon = "network-wireless-disconnected";
+    const char *icon = icon_disconnected();
     char       *tip  = NULL;
 
     if (!np->client || !nm_client_wireless_get_enabled(np->client)) {
-        icon = "network-wireless-disabled";
+        icon = icon_disabled();
         tip  = g_strdup(_("Wi-Fi disabled"));
     } else if (np->wifi) {
         NMAccessPoint *act = nm_device_wifi_get_active_access_point(np->wifi);
         if (act) {
             guint8 s = nm_access_point_get_strength(act);
             gchar *ssid = ap_ssid_str(act);
-            icon = strength_icon(s, ap_is_secured(act));
+            icon = best_icon(strength_names(s));
             tip  = g_strdup_printf(_("Connected: %s (%u%%)"), ssid, s);
             g_free(ssid);
         } else {
-            icon = "network-wireless-disconnected";
+            icon = icon_disconnected();
             tip  = g_strdup(_("Not connected"));
         }
     } else {
-        icon = "network-wireless-disconnected";
+        icon = icon_disconnected();
         tip  = g_strdup(_("No Wi-Fi device"));
     }
 
@@ -591,8 +641,7 @@ static GtkWidget *make_ap_row(NetPlugin *np, NMAccessPoint *ap, gboolean active)
     gtk_container_add(GTK_CONTAINER(btn), hb);
 
     guint8 s = nm_access_point_get_strength(ap);
-    GtkWidget *sig = gtk_image_new_from_icon_name(
-        strength_icon(s, ap_is_secured(ap)), GTK_ICON_SIZE_MENU);
+    GtkWidget *sig = image_from_names(strength_names(s), GTK_ICON_SIZE_MENU);
     gtk_box_pack_start(GTK_BOX(hb), sig, FALSE, FALSE, 0);
 
     gchar *ssid = ap_ssid_str(ap);
@@ -606,8 +655,10 @@ static GtkWidget *make_ap_row(NetPlugin *np, NMAccessPoint *ap, gboolean active)
     g_free(ssid);
 
     if (ap_is_secured(ap)) {
-        GtkWidget *lock = gtk_image_new_from_icon_name(
-            "network-wireless-encrypted", GTK_ICON_SIZE_MENU);
+        static const char *lk[] = { "network-wireless-encrypted",
+            "object-locked", "channel-secure-symbolic", "security-high",
+            "lock", NULL };
+        GtkWidget *lock = image_from_names(lk, GTK_ICON_SIZE_MENU);
         gtk_box_pack_start(GTK_BOX(hb), lock, FALSE, FALSE, 0);
     }
 
@@ -666,13 +717,18 @@ static void rebuild_list(NetPlugin *np)
         return;
     }
 
+    /* match the active network by SSID, not object identity: the list keeps the
+       strongest BSSID per SSID, which may differ from the associated AP object */
     NMAccessPoint *active = nm_device_wifi_get_active_access_point(np->wifi);
+    GBytes *active_ssid = active ? nm_access_point_get_ssid(active) : NULL;
     GPtrArray *aps = collect_aps(np->wifi);
     g_ptr_array_sort(aps, cmp_strength);
     for (guint i = 0; i < aps->len; i++) {
         NMAccessPoint *ap = g_ptr_array_index(aps, i);
+        GBytes *ssid = nm_access_point_get_ssid(ap);
+        gboolean is_active = active_ssid && ssid && g_bytes_equal(active_ssid, ssid);
         gtk_box_pack_start(GTK_BOX(np->list_box),
-                           make_ap_row(np, ap, ap == active), FALSE, FALSE, 0);
+                           make_ap_row(np, ap, is_active), FALSE, FALSE, 0);
     }
     if (aps->len == 0) {
         GtkWidget *l = gtk_label_new(_("No networks found"));
