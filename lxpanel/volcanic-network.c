@@ -340,6 +340,62 @@ static void show_inline_editor(NetPlugin *np, GtkWidget *row, NMAccessPoint *ap)
     gtk_widget_grab_focus(entry);
 }
 
+static void add_detail(GtkWidget *box, const char *label, const char *value)
+{
+    if (!value || !*value)
+        return;
+    gchar *m = g_markup_printf_escaped("<span size=\"small\">%s</span> %s",
+                                       label, value);
+    GtkWidget *l = gtk_label_new(NULL);
+    gtk_label_set_markup(GTK_LABEL(l), m);
+    gtk_misc_set_alignment(GTK_MISC(l), 0, 0.5);
+    gtk_label_set_selectable(GTK_LABEL(l), TRUE);
+    gtk_box_pack_start(GTK_BOX(box), l, FALSE, FALSE, 0);
+    g_free(m);
+}
+
+/* Expand an inline read-only details panel (IP/gateway/DNS/signal) under the
+   connected network. Reuses the single inline slot. */
+static void show_inline_details(NetPlugin *np, GtkWidget *row, NMAccessPoint *ap)
+{
+    editor_remove(np);
+
+    GtkWidget *box = gtk_vbox_new(FALSE, 1);
+    gtk_container_set_border_width(GTK_CONTAINER(box), 4);
+
+    NMIPConfig *ip = nm_device_get_ip4_config(NM_DEVICE(np->wifi));
+    if (ip) {
+        const GPtrArray *addrs = nm_ip_config_get_addresses(ip);
+        if (addrs && addrs->len) {
+            NMIPAddress *a = g_ptr_array_index(addrs, 0);
+            gchar *s = g_strdup_printf("%s/%u", nm_ip_address_get_address(a),
+                                       nm_ip_address_get_prefix(a));
+            add_detail(box, _("IP:"), s);
+            g_free(s);
+        }
+        add_detail(box, _("Gateway:"), nm_ip_config_get_gateway(ip));
+        const char *const *dns = nm_ip_config_get_nameservers(ip);
+        if (dns && dns[0])
+            add_detail(box, _("DNS:"), dns[0]);
+    }
+    gchar *sig = g_strdup_printf("%u%%", nm_access_point_get_strength(ap));
+    add_detail(box, _("Signal:"), sig);
+    g_free(sig);
+
+    /* mark which AP this panel is for, so a second click collapses it */
+    g_object_set_data(G_OBJECT(box), "details_ap", ap);
+
+    GList *kids = gtk_container_get_children(GTK_CONTAINER(np->list_box));
+    gint idx = g_list_index(kids, row);
+    g_list_free(kids);
+
+    gtk_box_pack_start(GTK_BOX(np->list_box), box, FALSE, FALSE, 0);
+    if (idx >= 0)
+        gtk_box_reorder_child(GTK_BOX(np->list_box), box, idx + 1);
+    np->inline_editor = box;
+    gtk_widget_show_all(box);
+}
+
 static void on_ap_clicked(GtkWidget *w, gpointer data)
 {
     NetPlugin     *np = g_object_get_data(G_OBJECT(w), "np");
@@ -347,10 +403,15 @@ static void on_ap_clicked(GtkWidget *w, gpointer data)
     if (!np || !ap || !np->wifi)
         return;
 
-    /* clicking the already-connected network is a no-op -- only the explicit
-       Disconnect button drops the connection */
+    /* clicking the connected network expands inline details (IP/gateway/...);
+       it never disconnects (only the Disconnect button does) nor dismisses.
+       A second click collapses it. */
     if (ap == nm_device_wifi_get_active_access_point(np->wifi)) {
-        popup_hide(np);
+        if (np->inline_editor &&
+            g_object_get_data(G_OBJECT(np->inline_editor), "details_ap") == ap)
+            editor_remove(np);
+        else
+            show_inline_details(np, w, ap);
         return;
     }
 
@@ -555,7 +616,12 @@ static void popup_show(NetPlugin *np)
     /* header: Wi-Fi toggle */
     GtkWidget *hdr = gtk_hbox_new(FALSE, 6);
     GtkWidget *title = gtk_label_new(NULL);
-    gtk_label_set_markup(GTK_LABEL(title), _("<b>Wi-Fi</b>"));
+    const char *iface = np->wifi ? nm_device_get_iface(NM_DEVICE(np->wifi)) : NULL;
+    gchar *hm = g_markup_printf_escaped(
+        "<b>%s</b>  <span size=\"small\">%s</span>", _("Wi-Fi"),
+        iface ? iface : "");
+    gtk_label_set_markup(GTK_LABEL(title), hm);
+    g_free(hm);
     gtk_misc_set_alignment(GTK_MISC(title), 0, 0.5);
     gtk_box_pack_start(GTK_BOX(hdr), title, TRUE, TRUE, 0);
     np->wifi_check = gtk_check_button_new();
