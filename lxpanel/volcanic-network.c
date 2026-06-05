@@ -23,6 +23,8 @@
 #include <lxpanel/plugin.h>
 #include <lxpanel/misc.h>          /* lxpanel_button_new_for_icon / set_icon */
 #include <glib/gi18n.h>
+#include <string.h>                /* strstr / strtol for panel-font probe */
+#include <stdlib.h>
 #include <gdk/gdkkeysyms.h>        /* GDK_Escape */
 #include <NetworkManager.h>        /* libnm umbrella header */
 
@@ -762,6 +764,37 @@ static void popup_hide(NetPlugin *np)
     }
 }
 
+/* The popup is built from plain GtkLabels, so its text renders at the GTK
+ * toolkit font (e.g. "Sans 10") and ignores the panel's own font setting --
+ * which looks tiny next to a panel using a large custom font size. lxpanel has
+ * no public getter for the configured size, but its public label helper bakes
+ * that size into the markup it generates. Run a throwaway label through it once,
+ * read the point size back out, and use it as the popup's base font so every
+ * child label (and relative <b>/size="small" spans) scales with the panel.
+ * No-op when the panel uses the default toolkit font, or if the probe fails. */
+static void np_apply_panel_font(NetPlugin *np, GtkWidget *w)
+{
+    GtkWidget *probe = gtk_label_new(NULL);
+    g_object_ref_sink(probe);
+    lxpanel_draw_label_text(np->panel, probe, "0", FALSE, 1.0, FALSE);
+    const char *markup = gtk_label_get_label(GTK_LABEL(probe));
+    int pt = 0;
+    if (markup) {
+        const char *p = strstr(markup, "font_desc=\"");
+        if (p)
+            pt = (int) strtol(p + strlen("font_desc=\""), NULL, 10);
+    }
+    g_object_unref(probe);
+    if (pt <= 0)
+        return;
+
+    PangoFontDescription *fd =
+        pango_font_description_copy(gtk_widget_get_style(w)->font_desc);
+    pango_font_description_set_size(fd, pt * PANGO_SCALE);
+    gtk_widget_modify_font(w, fd);
+    pango_font_description_free(fd);
+}
+
 static void popup_show(NetPlugin *np)
 {
     /* TOPLEVEL (not POPUP) so it can take focus -> focus-out dismiss works */
@@ -771,6 +804,9 @@ static void popup_show(NetPlugin *np)
     gtk_window_set_skip_pager_hint(GTK_WINDOW(np->popup), TRUE);
     gtk_window_set_type_hint(GTK_WINDOW(np->popup), GDK_WINDOW_TYPE_HINT_MENU);
     gtk_container_set_border_width(GTK_CONTAINER(np->popup), 4);
+
+    /* scale popup text with the panel's custom font size (see helper above) */
+    np_apply_panel_font(np, np->popup);
 
     GtkWidget *frame = gtk_frame_new(NULL);
     gtk_frame_set_shadow_type(GTK_FRAME(frame), GTK_SHADOW_OUT);
