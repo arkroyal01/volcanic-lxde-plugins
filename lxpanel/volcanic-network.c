@@ -140,12 +140,24 @@ static void schedule_icon(NetPlugin *np)
 
 /* ----- connect / disconnect --------------------------------------------- */
 
+/* Surface NM errors to the user (and the log) instead of failing silently. */
+static void report_error(const char *action, const GError *err)
+{
+    g_warning("volcanic-network: %s: %s", action,
+              err ? err->message : "unknown error");
+    GtkWidget *d = gtk_message_dialog_new(NULL, 0, GTK_MESSAGE_ERROR,
+        GTK_BUTTONS_CLOSE, "%s:\n%s", action, err ? err->message : "unknown error");
+    gtk_window_set_title(GTK_WINDOW(d), _("Network"));
+    g_signal_connect(d, "response", G_CALLBACK(gtk_widget_destroy), NULL);
+    gtk_widget_show_all(d);
+}
+
 static void activate_done(GObject *src, GAsyncResult *res, gpointer data)
 {
     GError *err = NULL;
     nm_client_activate_connection_finish(NM_CLIENT(src), res, &err);
     if (err) {
-        g_warning("volcanic-network: activate failed: %s", err->message);
+        report_error(_("Could not connect"), err);
         g_clear_error(&err);
     }
 }
@@ -155,7 +167,7 @@ static void add_activate_done(GObject *src, GAsyncResult *res, gpointer data)
     GError *err = NULL;
     nm_client_add_and_activate_connection_finish(NM_CLIENT(src), res, &err);
     if (err) {
-        g_warning("volcanic-network: add+activate failed: %s", err->message);
+        report_error(_("Could not connect"), err);
         g_clear_error(&err);
     }
 }
@@ -261,7 +273,7 @@ static void deactivate_done(GObject *src, GAsyncResult *res, gpointer data)
 {
     GError *err = NULL;
     nm_client_deactivate_connection_finish(NM_CLIENT(src), res, &err);
-    if (err) { g_warning("volcanic-network: disconnect failed: %s", err->message);
+    if (err) { report_error(_("Could not disconnect"), err);
                g_clear_error(&err); }
 }
 
