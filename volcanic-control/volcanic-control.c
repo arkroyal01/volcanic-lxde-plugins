@@ -257,6 +257,83 @@ static void add_group_section(GtkWidget *vb, const char *title, GList *items)
     gtk_box_pack_start(GTK_BOX(vb), table, FALSE, FALSE, 0);
 }
 
+/* ----- window geometry persistence --------------------------------------
+ * KWin (and most WMs) won't remember an app's size on its own -- that needs a
+ * manual per-window rule. So persist it ourselves to a tiny key file under
+ * $XDG_CONFIG_HOME/volcanic-control/. */
+
+#define DEFAULT_WIDTH  660
+#define DEFAULT_HEIGHT 620
+
+typedef struct {
+    int      width;
+    int      height;
+    gboolean maximized;
+} WinGeom;
+
+static gchar *geometry_path(void)
+{
+    gchar *dir = g_build_filename(g_get_user_config_dir(), "volcanic-control", NULL);
+    g_mkdir_with_parents(dir, 0700);
+    gchar *path = g_build_filename(dir, "state.ini", NULL);
+    g_free(dir);
+    return path;
+}
+
+static void geometry_load(WinGeom *g)
+{
+    g->width = DEFAULT_WIDTH;
+    g->height = DEFAULT_HEIGHT;
+    g->maximized = FALSE;
+
+    gchar *path = geometry_path();
+    GKeyFile *kf = g_key_file_new();
+    if (g_key_file_load_from_file(kf, path, G_KEY_FILE_NONE, NULL)) {
+        GError *e = NULL;
+        int w = g_key_file_get_integer(kf, "window", "width", &e);
+        if (!e && w > 0) g->width = w;
+        g_clear_error(&e);
+        int h = g_key_file_get_integer(kf, "window", "height", &e);
+        if (!e && h > 0) g->height = h;
+        g_clear_error(&e);
+        gboolean m = g_key_file_get_boolean(kf, "window", "maximized", &e);
+        if (!e) g->maximized = m;
+        g_clear_error(&e);
+    }
+    g_key_file_free(kf);
+    g_free(path);
+}
+
+static void geometry_save(const WinGeom *g)
+{
+    GKeyFile *kf = g_key_file_new();
+    g_key_file_set_integer(kf, "window", "width", g->width);
+    g_key_file_set_integer(kf, "window", "height", g->height);
+    g_key_file_set_boolean(kf, "window", "maximized", g->maximized);
+    gchar *path = geometry_path();
+    g_key_file_save_to_file(kf, path, NULL);
+    g_free(path);
+    g_key_file_free(kf);
+}
+
+/* track size only while unmaximized, so we restore the "normal" size */
+static gboolean on_configure(GtkWidget *w, GdkEventConfigure *e, gpointer data)
+{
+    WinGeom *g = data;
+    if (!g->maximized) {
+        g->width = e->width;
+        g->height = e->height;
+    }
+    return FALSE;
+}
+
+static gboolean on_window_state(GtkWidget *w, GdkEventWindowState *e, gpointer data)
+{
+    WinGeom *g = data;
+    g->maximized = (e->new_window_state & GDK_WINDOW_STATE_MAXIMIZED) != 0;
+    return FALSE;
+}
+
 int main(int argc, char **argv)
 {
     gtk_init(&argc, &argv);
@@ -264,10 +341,17 @@ int main(int argc, char **argv)
     GList *lists[N_GROUPS] = { NULL };
     discover(lists);
 
+    WinGeom geom;
+    geometry_load(&geom);
+
     GtkWidget *win = gtk_window_new(GTK_WINDOW_TOPLEVEL);
     gtk_window_set_title(GTK_WINDOW(win), "Volcanic Control Center");
     gtk_window_set_icon_name(GTK_WINDOW(win), "preferences-system");
-    gtk_window_set_default_size(GTK_WINDOW(win), 660, 620);
+    gtk_window_set_default_size(GTK_WINDOW(win), geom.width, geom.height);
+    if (geom.maximized)
+        gtk_window_maximize(GTK_WINDOW(win));
+    g_signal_connect(win, "configure-event", G_CALLBACK(on_configure), &geom);
+    g_signal_connect(win, "window-state-event", G_CALLBACK(on_window_state), &geom);
     g_signal_connect(win, "destroy", G_CALLBACK(gtk_main_quit), NULL);
 
     GtkWidget *scroll = gtk_scrolled_window_new(NULL, NULL);
@@ -298,5 +382,7 @@ int main(int argc, char **argv)
 
     gtk_widget_show_all(win);
     gtk_main();
+
+    geometry_save(&geom);
     return 0;
 }
