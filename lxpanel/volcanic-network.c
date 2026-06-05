@@ -23,6 +23,7 @@
 #include <lxpanel/plugin.h>
 #include <lxpanel/misc.h>          /* lxpanel_button_new_for_icon / set_icon */
 #include <glib/gi18n.h>
+#include <gdk/gdkkeysyms.h>        /* GDK_Escape */
 #include <NetworkManager.h>        /* libnm umbrella header */
 
 typedef struct {
@@ -32,6 +33,7 @@ typedef struct {
     GtkWidget        *popup;       /* the dropdown window (NULL when hidden) */
     GtkWidget        *list_box;    /* VBox holding AP rows, rebuilt on demand */
     GtkWidget        *wifi_check;  /* the Wi-Fi enable toggle */
+    GtkWidget        *inline_editor; /* in-popup password row, or NULL */
     gboolean          updating_toggle;
 
     NMClient         *client;
@@ -206,38 +208,7 @@ static NMConnection *make_wifi_conn(NMAccessPoint *ap, const char *psk)
     return c;
 }
 
-/* Ask for a password (modal). Returns newly-allocated string or NULL. */
-static gchar *ask_password(NetPlugin *np, const char *ssid)
-{
-    GtkWidget *dlg = gtk_dialog_new_with_buttons(
-        _("Wi-Fi Password"),
-        GTK_WINDOW(gtk_widget_get_toplevel(np->button)),
-        GTK_DIALOG_MODAL | GTK_DIALOG_DESTROY_WITH_PARENT,
-        GTK_STOCK_CANCEL, GTK_RESPONSE_CANCEL,
-        GTK_STOCK_CONNECT, GTK_RESPONSE_OK, NULL);
-    gtk_dialog_set_default_response(GTK_DIALOG(dlg), GTK_RESPONSE_OK);
-
-    GtkWidget *box = gtk_dialog_get_content_area(GTK_DIALOG(dlg));
-    gchar *msg = g_strdup_printf(_("Password for \"%s\":"), ssid);
-    GtkWidget *lbl = gtk_label_new(msg);
-    g_free(msg);
-    gtk_misc_set_alignment(GTK_MISC(lbl), 0, 0.5);
-    GtkWidget *entry = gtk_entry_new();
-    gtk_entry_set_visibility(GTK_ENTRY(entry), FALSE);
-    gtk_entry_set_activates_default(GTK_ENTRY(entry), TRUE);
-    gtk_box_pack_start(GTK_BOX(box), lbl, FALSE, FALSE, 4);
-    gtk_box_pack_start(GTK_BOX(box), entry, FALSE, FALSE, 4);
-    gtk_widget_show_all(dlg);
-
-    gchar *out = NULL;
-    if (gtk_dialog_run(GTK_DIALOG(dlg)) == GTK_RESPONSE_OK) {
-        const char *t = gtk_entry_get_text(GTK_ENTRY(entry));
-        if (t && *t)
-            out = g_strdup(t);
-    }
-    gtk_widget_destroy(dlg);
-    return out;
-}
+/* (the password entry is an inline row in the popup now -- show_inline_editor) */
 
 /* Deferred connect: after committing a converted (now system-stored)
    connection, activate it. Carries the AP path across the async commit. */
@@ -260,41 +231,18 @@ static void commit_then_activate(GObject *src, GAsyncResult *res, gpointer data)
     g_free(c);
 }
 
-static void on_ap_clicked(GtkWidget *w, gpointer data)
+/* Connect to ap with an optional psk. saved+open / saved+system-stored ->
+   activate; saved+psk -> convert to system-stored (commit) then activate;
+   new -> add+activate. */
+static void do_connect(NetPlugin *np, NMAccessPoint *ap, const char *psk)
 {
-    NetPlugin     *np = g_object_get_data(G_OBJECT(w), "np");
-    NMAccessPoint *ap = g_object_get_data(G_OBJECT(w), "ap");
-    if (!np || !ap || !np->wifi)
-        return;
-
-    /* clicking the already-connected network is a no-op -- disconnecting is
-       only done via the explicit Disconnect button */
-    if (ap == nm_device_wifi_get_active_access_point(np->wifi)) {
-        popup_hide(np);
-        return;
-    }
-
     const char *apath = nm_object_get_path(NM_OBJECT(ap));
     NMRemoteConnection *saved = saved_conn_for_ap(np, ap);
 
-    popup_hide(np);
-
     if (saved) {
-        NMSettingWirelessSecurity *sec =
-            nm_connection_get_setting_wireless_security(NM_CONNECTION(saved));
-        NMSettingSecretFlags flags = sec
-            ? nm_setting_wireless_security_get_psk_flags(sec)
-            : NM_SETTING_SECRET_FLAG_NONE;
-
-        if (ap_is_secured(ap) && flags != NM_SETTING_SECRET_FLAG_NONE) {
-            /* Secret is agent-owned/not-saved, but we run no agent yet. Prompt
-               once and convert this connection to system-stored, then connect.
-               (Per-user encrypted storage via a Secret-Service agent: backlog.) */
-            gchar *ssid = ap_ssid_str(ap);
-            gchar *psk  = ask_password(np, ssid);
-            g_free(ssid);
-            if (!psk)
-                return;                 /* cancelled */
+        if (psk) {
+            NMSettingWirelessSecurity *sec =
+                nm_connection_get_setting_wireless_security(NM_CONNECTION(saved));
             if (!sec) {
                 sec = (NMSettingWirelessSecurity *)
                           nm_setting_wireless_security_new();
@@ -307,8 +255,6 @@ static void on_ap_clicked(GtkWidget *w, gpointer data)
             g_object_set(sec, NM_SETTING_WIRELESS_SECURITY_PSK, psk,
                          NM_SETTING_WIRELESS_SECURITY_PSK_FLAGS,
                          NM_SETTING_SECRET_FLAG_NONE, NULL);
-            g_free(psk);
-
             ConnectCtx *ctx = g_new0(ConnectCtx, 1);
             ctx->np    = np;
             ctx->conn  = g_object_ref(saved);
@@ -319,24 +265,116 @@ static void on_ap_clicked(GtkWidget *w, gpointer data)
             nm_client_activate_connection_async(np->client, NM_CONNECTION(saved),
                 NM_DEVICE(np->wifi), apath, NULL, activate_done, np);
         }
+    } else {
+        NMConnection *c = make_wifi_conn(ap, psk);   /* psk NULL for open nets */
+        nm_client_add_and_activate_connection_async(np->client, c,
+            NM_DEVICE(np->wifi), apath, NULL, add_activate_done, np);
+        g_object_unref(c);
+    }
+}
+
+static void editor_remove(NetPlugin *np)
+{
+    if (np->inline_editor) {
+        GtkWidget *e = np->inline_editor;
+        np->inline_editor = NULL;        /* clear first so rebuild isn't blocked */
+        gtk_widget_destroy(e);
+    }
+}
+
+static gboolean editor_key(GtkWidget *w, GdkEventKey *e, gpointer data)
+{
+    if (e->keyval == GDK_Escape) {       /* Esc cancels the inline prompt */
+        editor_remove((NetPlugin *) data);
+        return TRUE;
+    }
+    return FALSE;
+}
+
+static void editor_submit(GtkWidget *w, gpointer data)
+{
+    GtkWidget     *editor = data;
+    NetPlugin     *np    = g_object_get_data(G_OBJECT(editor), "np");
+    NMAccessPoint *ap    = g_object_get_data(G_OBJECT(editor), "ap");
+    GtkWidget     *entry = g_object_get_data(G_OBJECT(editor), "entry");
+    const char    *t     = gtk_entry_get_text(GTK_ENTRY(entry));
+    if (!t || !*t)
+        return;                          /* empty -> ignore */
+    gchar         *psk = g_strdup(t);
+    NMAccessPoint *apr = g_object_ref(ap);
+    popup_hide(np);                      /* closes the popup (and the editor) */
+    do_connect(np, apr, psk);
+    g_object_unref(apr);
+    g_free(psk);
+}
+
+/* Expand an inline password row directly beneath the clicked network (KDE-style). */
+static void show_inline_editor(NetPlugin *np, GtkWidget *row, NMAccessPoint *ap)
+{
+    editor_remove(np);
+
+    GtkWidget *box = gtk_hbox_new(FALSE, 4);
+    gtk_container_set_border_width(GTK_CONTAINER(box), 2);
+    GtkWidget *entry = gtk_entry_new();
+    gtk_entry_set_visibility(GTK_ENTRY(entry), FALSE);
+    GtkWidget *btn = gtk_button_new_with_label(_("Connect"));
+    gtk_box_pack_start(GTK_BOX(box), entry, TRUE, TRUE, 0);
+    gtk_box_pack_start(GTK_BOX(box), btn, FALSE, FALSE, 0);
+
+    g_object_set_data(G_OBJECT(box), "np", np);
+    g_object_set_data_full(G_OBJECT(box), "ap", g_object_ref(ap), g_object_unref);
+    g_object_set_data(G_OBJECT(box), "entry", entry);
+    g_signal_connect(entry, "activate", G_CALLBACK(editor_submit), box);
+    g_signal_connect(btn,   "clicked",  G_CALLBACK(editor_submit), box);
+    g_signal_connect(entry, "key-press-event", G_CALLBACK(editor_key), np);
+
+    GList *kids = gtk_container_get_children(GTK_CONTAINER(np->list_box));
+    gint idx = g_list_index(kids, row);
+    g_list_free(kids);
+
+    gtk_box_pack_start(GTK_BOX(np->list_box), box, FALSE, FALSE, 0);
+    if (idx >= 0)
+        gtk_box_reorder_child(GTK_BOX(np->list_box), box, idx + 1);
+    np->inline_editor = box;
+    gtk_widget_show_all(box);
+    gtk_widget_grab_focus(entry);
+}
+
+static void on_ap_clicked(GtkWidget *w, gpointer data)
+{
+    NetPlugin     *np = g_object_get_data(G_OBJECT(w), "np");
+    NMAccessPoint *ap = g_object_get_data(G_OBJECT(w), "ap");
+    if (!np || !ap || !np->wifi)
+        return;
+
+    /* clicking the already-connected network is a no-op -- only the explicit
+       Disconnect button drops the connection */
+    if (ap == nm_device_wifi_get_active_access_point(np->wifi)) {
+        popup_hide(np);
         return;
     }
 
-    NMConnection *c;
-    if (ap_is_secured(ap)) {
-        gchar *ssid = ap_ssid_str(ap);
-        gchar *psk  = ask_password(np, ssid);
-        g_free(ssid);
-        if (!psk)
-            return;                 /* cancelled */
-        c = make_wifi_conn(ap, psk);
-        g_free(psk);
+    NMRemoteConnection *saved = saved_conn_for_ap(np, ap);
+    gboolean needs_pw;
+    if (!ap_is_secured(ap)) {
+        needs_pw = FALSE;                 /* open network */
+    } else if (saved) {
+        NMSettingWirelessSecurity *sec =
+            nm_connection_get_setting_wireless_security(NM_CONNECTION(saved));
+        NMSettingSecretFlags flags = sec
+            ? nm_setting_wireless_security_get_psk_flags(sec)
+            : NM_SETTING_SECRET_FLAG_NONE;
+        needs_pw = (flags != NM_SETTING_SECRET_FLAG_NONE); /* agent-owned -> ask */
     } else {
-        c = make_wifi_conn(ap, NULL);
+        needs_pw = TRUE;                  /* new secured network */
     }
-    nm_client_add_and_activate_connection_async(np->client, c,
-        NM_DEVICE(np->wifi), apath, NULL, add_activate_done, np);
-    g_object_unref(c);
+
+    if (needs_pw) {
+        show_inline_editor(np, w, ap);    /* submit -> do_connect(np, ap, psk) */
+    } else {
+        popup_hide(np);
+        do_connect(np, ap, NULL);
+    }
 }
 
 static void deactivate_done(GObject *src, GAsyncResult *res, gpointer data)
@@ -443,6 +481,8 @@ static void rebuild_list(NetPlugin *np)
 {
     if (!np->list_box)
         return;
+    if (np->inline_editor)
+        return;             /* don't tear down an open inline password editor */
     gtk_container_foreach(GTK_CONTAINER(np->list_box),
                           (GtkCallback) gtk_widget_destroy, NULL);
 
@@ -490,6 +530,7 @@ static void popup_hide(NetPlugin *np)
         np->popup = NULL;
         np->list_box = NULL;
         np->wifi_check = NULL;
+        np->inline_editor = NULL;
     }
 }
 
