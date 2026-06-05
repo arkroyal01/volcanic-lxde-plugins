@@ -617,9 +617,10 @@ static void popup_show(NetPlugin *np)
     GtkWidget *hdr = gtk_hbox_new(FALSE, 6);
     GtkWidget *title = gtk_label_new(NULL);
     const char *iface = np->wifi ? nm_device_get_iface(NM_DEVICE(np->wifi)) : NULL;
-    gchar *hm = g_markup_printf_escaped(
-        "<b>%s</b>  <span size=\"small\">%s</span>", _("Wi-Fi"),
-        iface ? iface : "");
+    gchar *hm = (iface && *iface)
+        ? g_markup_printf_escaped("<b>%s</b>  <span size=\"small\">(%s)</span>",
+                                  _("Wi-Fi"), iface)
+        : g_markup_printf_escaped("<b>%s</b>", _("Wi-Fi"));
     gtk_label_set_markup(GTK_LABEL(title), hm);
     g_free(hm);
     gtk_misc_set_alignment(GTK_MISC(title), 0, 0.5);
