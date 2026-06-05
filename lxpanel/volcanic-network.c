@@ -241,6 +241,13 @@ static void on_ap_clicked(GtkWidget *w, gpointer data)
     if (!np || !ap || !np->wifi)
         return;
 
+    /* clicking the already-connected network is a no-op -- disconnecting is
+       only done via the explicit Disconnect button */
+    if (ap == nm_device_wifi_get_active_access_point(np->wifi)) {
+        popup_hide(np);
+        return;
+    }
+
     const char *apath = nm_object_get_path(NM_OBJECT(ap));
     NMRemoteConnection *saved = saved_conn_for_ap(np, ap);
 
