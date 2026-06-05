@@ -9,7 +9,9 @@ leaves when its usual Openbox WM is swapped for kwin_x11.
 | Subdir | Plugin | What it does |
 |---|---|---|
 | `lxhotkey/` | `kwin.so` | lxhotkey WM backend for KWin. Lets LXDE's hotkey editor (`lxhotkey`) read/edit KWin's global shortcuts, clearing the *"Could not find a plugin for window manager KWin"* error. |
-| `lxpanel/` | _(planned)_ | `volcanic-overview`, `volcanic-power`, `volcanic-volume` panel widgets. |
+| `lxpanel/` | `volcanic-overview.so` | Panel button that toggles the KWin window overview (via KGlobalAccel D-Bus). |
+| `lxpanel/` | `volcanic-network.so` | NetworkManager Wi-Fi applet (libnm), Plasma-style, GTK2: panel signal icon + popup with Wi-Fi toggle, active connection/disconnect, and an AP list (signal + lock) you click to connect (password prompt for new secured nets). Shows only Wi-Fi, so wired/virtual devices don't clutter it. |
+| `lxpanel/` | _(planned)_ | `volcanic-power`, `volcanic-volume`. |
 
 ## lxhotkey/kwin
 
