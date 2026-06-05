@@ -354,8 +354,103 @@ static void add_detail(GtkWidget *box, const char *label, const char *value)
     g_free(m);
 }
 
-/* Expand an inline read-only details panel (IP/gateway/DNS/signal) under the
-   connected network. Reuses the single inline slot. */
+static const char *ap_security_str(NMAccessPoint *ap)
+{
+    NM80211ApSecurityFlags rsn = nm_access_point_get_rsn_flags(ap);
+    NM80211ApSecurityFlags wpa = nm_access_point_get_wpa_flags(ap);
+    if (rsn & NM_802_11_AP_SEC_KEY_MGMT_SAE) return "WPA3";
+    if (rsn)                                 return "WPA2";
+    if (wpa)                                 return "WPA";
+    if (nm_access_point_get_flags(ap) & NM_802_11_AP_FLAGS_PRIVACY) return "WEP";
+    return "Open";
+}
+
+static const char *freq_band(guint32 mhz)
+{
+    if (mhz >= 5925) return "6 GHz";
+    if (mhz >= 4900) return "5 GHz";
+    if (mhz >= 2400) return "2.4 GHz";
+    return "";
+}
+
+static void add_ip_details(GtkWidget *vb, NMIPConfig *ip, const char *fam)
+{
+    if (!ip)
+        return;
+    const GPtrArray *addrs = nm_ip_config_get_addresses(ip);
+    for (guint i = 0; addrs && i < addrs->len; i++) {
+        NMIPAddress *a = g_ptr_array_index(addrs, i);
+        gchar *s = g_strdup_printf("%s/%u", nm_ip_address_get_address(a),
+                                   nm_ip_address_get_prefix(a));
+        gchar *l = g_strdup_printf(_("%s address:"), fam);
+        add_detail(vb, l, s);
+        g_free(s); g_free(l);
+    }
+    gchar *gl = g_strdup_printf(_("%s gateway:"), fam);
+    add_detail(vb, gl, nm_ip_config_get_gateway(ip));
+    g_free(gl);
+    const char *const *dns = nm_ip_config_get_nameservers(ip);
+    for (int i = 0; dns && dns[i]; i++) {
+        gchar *dl = g_strdup_printf(_("%s DNS:"), fam);
+        add_detail(vb, dl, dns[i]);
+        g_free(dl);
+    }
+}
+
+/* Full connection details: a Close-able dialog with everything NM exposes. */
+static void show_details_dialog(NetPlugin *np, NMAccessPoint *ap)
+{
+    NMDevice  *dev = NM_DEVICE(np->wifi);
+    GtkWidget *dlg = gtk_dialog_new_with_buttons(_("Connection Details"),
+        GTK_WINDOW(gtk_widget_get_toplevel(np->button)),
+        GTK_DIALOG_DESTROY_WITH_PARENT,
+        GTK_STOCK_CLOSE, GTK_RESPONSE_CLOSE, NULL);
+    GtkWidget *vb = gtk_vbox_new(FALSE, 2);
+    gtk_container_set_border_width(GTK_CONTAINER(vb), 8);
+    gtk_box_pack_start(GTK_BOX(gtk_dialog_get_content_area(GTK_DIALOG(dlg))),
+                       vb, TRUE, TRUE, 0);
+
+    gchar *ssid = ap_ssid_str(ap);
+    add_detail(vb, _("Network:"), ssid);
+    g_free(ssid);
+    add_detail(vb, _("BSSID:"), nm_access_point_get_bssid(ap));
+    add_detail(vb, _("Security:"), ap_security_str(ap));
+
+    guint32 freq = nm_access_point_get_frequency(ap);
+    gchar *fs = g_strdup_printf("%u MHz (%s)", freq, freq_band(freq));
+    add_detail(vb, _("Frequency:"), fs);
+    g_free(fs);
+
+    guint32 br = nm_device_wifi_get_bitrate(np->wifi);   /* kb/s */
+    if (br) { gchar *s = g_strdup_printf(_("%u Mbit/s"), br / 1000);
+              add_detail(vb, _("Speed:"), s); g_free(s); }
+    guint32 mb = nm_access_point_get_max_bitrate(ap);
+    if (mb) { gchar *s = g_strdup_printf(_("%u Mbit/s"), mb / 1000);
+              add_detail(vb, _("Max rate:"), s); g_free(s); }
+
+    gchar *sig = g_strdup_printf("%u%%", nm_access_point_get_strength(ap));
+    add_detail(vb, _("Signal:"), sig);
+    g_free(sig);
+    add_detail(vb, _("Adapter MAC:"), nm_device_get_hw_address(dev));
+
+    gtk_box_pack_start(GTK_BOX(vb), gtk_hseparator_new(), FALSE, FALSE, 2);
+    add_ip_details(vb, nm_device_get_ip4_config(dev), "IPv4");
+    add_ip_details(vb, nm_device_get_ip6_config(dev), "IPv6");
+
+    g_signal_connect(dlg, "response", G_CALLBACK(gtk_widget_destroy), NULL);
+    gtk_widget_show_all(dlg);
+}
+
+static void on_details_clicked(GtkWidget *w, gpointer data)
+{
+    NetPlugin     *np = g_object_get_data(G_OBJECT(w), "np");
+    NMAccessPoint *ap = g_object_get_data(G_OBJECT(w), "ap");
+    if (np && ap)
+        show_details_dialog(np, ap);
+}
+
+/* Expand an inline read-only details panel (IP/gateway/DNS/signal/speed +
+   a Details button) under the connected network. Reuses the single inline slot. */
 static void show_inline_details(NetPlugin *np, GtkWidget *row, NMAccessPoint *ap)
 {
     editor_remove(np);
@@ -381,6 +476,22 @@ static void show_inline_details(NetPlugin *np, GtkWidget *row, NMAccessPoint *ap
     gchar *sig = g_strdup_printf("%u%%", nm_access_point_get_strength(ap));
     add_detail(box, _("Signal:"), sig);
     g_free(sig);
+
+    guint32 br = nm_device_wifi_get_bitrate(np->wifi);   /* kb/s */
+    if (br) {
+        gchar *s = g_strdup_printf(_("%u Mbit/s"), br / 1000);
+        add_detail(box, _("Speed:"), s);
+        g_free(s);
+    }
+
+    /* Details button -> opens the full details in a separate window */
+    GtkWidget *bb = gtk_hbox_new(FALSE, 0);
+    GtkWidget *db = gtk_button_new_with_label(_("Details\xE2\x80\xA6"));
+    g_object_set_data(G_OBJECT(db), "np", np);
+    g_object_set_data_full(G_OBJECT(db), "ap", g_object_ref(ap), g_object_unref);
+    g_signal_connect(db, "clicked", G_CALLBACK(on_details_clicked), NULL);
+    gtk_box_pack_end(GTK_BOX(bb), db, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(box), bb, FALSE, FALSE, 2);
 
     /* mark which AP this panel is for, so a second click collapses it */
     g_object_set_data(G_OBJECT(box), "details_ap", ap);
