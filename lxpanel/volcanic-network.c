@@ -519,6 +519,15 @@ static void on_aps_changed(NMDeviceWifi *w, NMAccessPoint *ap, gpointer data)
         rebuild_list(np);
 }
 
+/* NMDevice::state-changed has its own signature (device, new, old, reason,
+   data) -- it must NOT share on_nm_changed (a notify:: handler), or `data`
+   lands on old_state instead of our NetPlugin. */
+static void on_dev_state(NMDevice *d, guint new_state, guint old_state,
+                         guint reason, gpointer data)
+{
+    on_nm_changed(NULL, NULL, data);
+}
+
 static void hook_wifi_device(NetPlugin *np)
 {
     const GPtrArray *devs = nm_client_get_devices(np->client);
@@ -529,7 +538,7 @@ static void hook_wifi_device(NetPlugin *np)
             g_signal_connect(d, "notify::" NM_DEVICE_WIFI_ACTIVE_ACCESS_POINT,
                              G_CALLBACK(on_nm_changed), np);
             g_signal_connect(d, "state-changed",
-                             G_CALLBACK(on_nm_changed), np);
+                             G_CALLBACK(on_dev_state), np);
             g_signal_connect(d, "access-point-added",
                              G_CALLBACK(on_aps_changed), np);
             g_signal_connect(d, "access-point-removed",
