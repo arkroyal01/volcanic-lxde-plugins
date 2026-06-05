@@ -12,3 +12,6 @@ compile_commands.json
 /pkg/
 /src/
 *.pkg.tar.*
+
+# packaging recipe kept out of the tree
+PKGBUILD
