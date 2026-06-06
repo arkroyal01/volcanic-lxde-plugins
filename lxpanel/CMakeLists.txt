@@ -3,6 +3,7 @@
 pkg_check_modules(LXPANEL REQUIRED IMPORTED_TARGET lxpanel)
 pkg_check_modules(GIO REQUIRED IMPORTED_TARGET gio-2.0)
 pkg_check_modules(LIBNM IMPORTED_TARGET libnm)        # for volcanic-network (optional)
+pkg_check_modules(DBUSMENU IMPORTED_TARGET dbusmenu-gtk-0.4) # for volcanic-sni (optional)
 pkg_get_variable(LXPANEL_PLUGINSDIR lxpanel pluginsdir)
 
 # Sources shared by every plugin (recolouring icon loader, ...).
@@ -24,5 +25,11 @@ if(LIBNM_FOUND)
 else()
   message(WARNING "libnm not found -- skipping volcanic-network (NetworkManager applet)")
 endif()
+if(DBUSMENU_FOUND)
+  volcanic_lxpanel_plugin(volcanic-sni EXTRA PkgConfig::DBUSMENU)
+else()
+  message(WARNING "dbusmenu-gtk-0.4 not found -- skipping volcanic-sni (SNI tray)")
+endif()
+
 # volcanic_lxpanel_plugin(volcanic-power)    # later
 # volcanic_lxpanel_plugin(volcanic-volume)   # later
