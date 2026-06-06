@@ -22,6 +22,7 @@
 
 #include <lxpanel/plugin.h>
 #include <lxpanel/misc.h>          /* lxpanel_button_new_for_icon / set_icon */
+#include "volcanic-icon.h"         /* recoloured panel icons (Breeze on dark) */
 #include <glib/gi18n.h>
 #include <string.h>                /* strstr / strtol for panel-font probe */
 #include <stdlib.h>
@@ -31,7 +32,8 @@
 typedef struct {
     LXPanel          *panel;
     config_setting_t *settings;
-    GtkWidget        *button;      /* panel icon button */
+    GtkWidget        *button;      /* panel icon button (our event box) */
+    GtkWidget        *icon_img;    /* the recoloured GtkImage inside button */
     GtkWidget        *popup;       /* the dropdown window (NULL when hidden) */
     GtkWidget        *list_box;    /* VBox holding AP rows, rebuilt on demand */
     GtkWidget        *wifi_check;  /* the Wi-Fi enable toggle */
@@ -170,7 +172,11 @@ static void update_icon(NetPlugin *np)
         tip  = g_strdup(_("No Wi-Fi device"));
     }
 
-    lxpanel_button_set_icon(np->button, icon, -1);
+    GdkColor fg;
+    volcanic_panel_fg(np->panel, &fg);
+    volcanic_icon_image_set(GTK_IMAGE(np->icon_img),
+                            panel_get_icon_theme(np->panel), icon,
+                            panel_get_icon_size(np->panel), &fg);
     if (tip) {
         gtk_widget_set_tooltip_text(np->button, tip);
         g_free(tip);
@@ -264,7 +270,14 @@ static NMConnection *make_wifi_conn(NMAccessPoint *ap, const char *psk)
 
 /* Deferred connect: after committing a converted (now system-stored)
    connection, activate it. Carries the AP path across the async commit. */
-typedef struct { NetPlugin *np; NMRemoteConnection *conn; gchar *apath; } ConnectCtx;
+/* Refs the client/device (not the plugin) so this survives the plugin being
+   removed from the panel mid-commit -- otherwise c->np would dangle (UAF). */
+typedef struct {
+    NMClient          *client;
+    NMDeviceWifi      *wifi;
+    NMRemoteConnection *conn;
+    gchar             *apath;
+} ConnectCtx;
 
 static void commit_then_activate(GObject *src, GAsyncResult *res, gpointer data)
 {
@@ -275,10 +288,12 @@ static void commit_then_activate(GObject *src, GAsyncResult *res, gpointer data)
         report_error(_("Could not save password"), err);
         g_clear_error(&err);
     } else {
-        nm_client_activate_connection_async(c->np->client, NM_CONNECTION(c->conn),
-            NM_DEVICE(c->np->wifi), c->apath, NULL, activate_done, c->np);
+        nm_client_activate_connection_async(c->client, NM_CONNECTION(c->conn),
+            NM_DEVICE(c->wifi), c->apath, NULL, activate_done, NULL);
     }
     g_object_unref(c->conn);
+    g_object_unref(c->client);
+    g_object_unref(c->wifi);
     g_free(c->apath);
     g_free(c);
 }
@@ -308,9 +323,10 @@ static void do_connect(NetPlugin *np, NMAccessPoint *ap, const char *psk)
                          NM_SETTING_WIRELESS_SECURITY_PSK_FLAGS,
                          NM_SETTING_SECRET_FLAG_NONE, NULL);
             ConnectCtx *ctx = g_new0(ConnectCtx, 1);
-            ctx->np    = np;
-            ctx->conn  = g_object_ref(saved);
-            ctx->apath = g_strdup(apath);
+            ctx->client = g_object_ref(np->client);
+            ctx->wifi   = g_object_ref(np->wifi);
+            ctx->conn   = g_object_ref(saved);
+            ctx->apath  = g_strdup(apath);
             nm_remote_connection_commit_changes_async(saved, TRUE, NULL,
                                                       commit_then_activate, ctx);
         } else {
@@ -596,8 +612,11 @@ static void on_ap_clicked(GtkWidget *w, gpointer data)
     if (needs_pw) {
         show_inline_editor(np, w, ap);    /* submit -> do_connect(np, ap, psk) */
     } else {
+        NMAccessPoint *apr = g_object_ref(ap);  /* popup_hide destroys the row
+                                                   (and its ref on ap) */
         popup_hide(np);
-        do_connect(np, ap, NULL);
+        do_connect(np, apr, NULL);
+        g_object_unref(apr);
     }
 }
 
@@ -977,8 +996,24 @@ static GtkWidget *net_constructor(LXPanel *panel, config_setting_t *settings)
     np->panel = panel;
     np->settings = settings;
 
-    np->button = lxpanel_button_new_for_icon(panel,
-                     "network-wireless-disconnected", NULL, NULL);
+    /* Our own button so we control the image: lxpanel_button renders the named
+       icon straight from the theme, which leaves Breeze's monochrome SVGs
+       near-black and invisible on a dark panel. An event box + GtkImage lets us
+       feed a recoloured pixbuf (see volcanic-icon). Clicks still arrive via the
+       plugin's .button_press_event hook, independent of the widget type. */
+    np->button = gtk_event_box_new();
+    gtk_event_box_set_visible_window(GTK_EVENT_BOX(np->button), FALSE);
+    gtk_widget_add_events(np->button, GDK_BUTTON_PRESS_MASK);
+    np->icon_img = gtk_image_new();
+    gtk_container_add(GTK_CONTAINER(np->button), np->icon_img);
+    {
+        GdkColor fg;
+        volcanic_panel_fg(panel, &fg);
+        volcanic_icon_image_set(GTK_IMAGE(np->icon_img),
+                                panel_get_icon_theme(panel),
+                                "network-wireless-disconnected",
+                                panel_get_icon_size(panel), &fg);
+    }
 
     GError *err = NULL;
     np->client = nm_client_new(NULL, &err);
@@ -1003,6 +1038,15 @@ static GtkWidget *net_constructor(LXPanel *panel, config_setting_t *settings)
     return np->button;
 }
 
+/* Panel size/colour changed: re-render the icon at the new size and foreground
+   (lxpanel_button did this for free; our own GtkImage needs the nudge). */
+static void net_reconfigure(LXPanel *panel, GtkWidget *instance)
+{
+    NetPlugin *np = lxpanel_plugin_get_data(instance);
+    if (np)
+        update_icon(np);
+}
+
 FM_DEFINE_MODULE(lxpanel_gtk, volcanic_network)
 
 LXPanelPluginInit fm_module_init_lxpanel_gtk = {
@@ -1010,4 +1054,5 @@ LXPanelPluginInit fm_module_init_lxpanel_gtk = {
     .description = N_("NetworkManager Wi-Fi applet (Plasma-style, GTK2)."),
     .new_instance = net_constructor,
     .button_press_event = on_button_press,
+    .reconfigure = net_reconfigure,
 };

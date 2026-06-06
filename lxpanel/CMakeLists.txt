@@ -5,10 +5,13 @@ pkg_check_modules(GIO REQUIRED IMPORTED_TARGET gio-2.0)
 pkg_check_modules(LIBNM IMPORTED_TARGET libnm)        # for volcanic-network (optional)
 pkg_get_variable(LXPANEL_PLUGINSDIR lxpanel pluginsdir)
 
+# Sources shared by every plugin (recolouring icon loader, ...).
+set(VOLCANIC_COMMON ${CMAKE_CURRENT_SOURCE_DIR}/volcanic-icon.c)
+
 # volcanic_lxpanel_plugin(<name> [EXTRA <pkgconfig-imported-targets...>])
 function(volcanic_lxpanel_plugin name)
   cmake_parse_arguments(P "" "" "EXTRA" ${ARGN})
-  add_library(${name} MODULE ${name}.c)
+  add_library(${name} MODULE ${name}.c ${VOLCANIC_COMMON})
   target_link_libraries(${name} PkgConfig::LXPANEL PkgConfig::GIO ${P_EXTRA})
   set_target_properties(${name} PROPERTIES PREFIX "" OUTPUT_NAME "${name}")
   install(TARGETS ${name} DESTINATION ${LXPANEL_PLUGINSDIR})
