@@ -183,7 +183,8 @@ static void discover(GList **lists)
 
 #define GRID_COLUMNS 5
 #define TILE_ICON_SIZE GTK_ICON_SIZE_DIALOG   /* 48px */
-#define TILE_LABEL_WIDTH 100
+#define TILE_WIDTH 132                        /* fixed tile width */
+#define TILE_LABEL_CHARS 13                   /* label wrap width, in chars */
 
 static void on_tile_clicked(GtkWidget *btn, gpointer data)
 {
@@ -204,6 +205,8 @@ static GtkWidget *make_tile(GDesktopAppInfo *info)
 {
     GtkWidget *btn = gtk_button_new();
     gtk_button_set_relief(GTK_BUTTON(btn), GTK_RELIEF_NONE);
+    gtk_widget_set_can_focus(btn, FALSE);   /* no focus ring to shift content */
+    gtk_widget_set_size_request(btn, TILE_WIDTH, -1);   /* uniform tile width */
 
     GtkWidget *box = gtk_vbox_new(FALSE, 4);
     gtk_container_set_border_width(GTK_CONTAINER(box), 6);
@@ -216,16 +219,23 @@ static GtkWidget *make_tile(GDesktopAppInfo *info)
 
     GtkWidget *lbl = gtk_label_new(g_app_info_get_name(G_APP_INFO(info)));
     gtk_label_set_line_wrap(GTK_LABEL(lbl), TRUE);
+    gtk_label_set_line_wrap_mode(GTK_LABEL(lbl), PANGO_WRAP_WORD_CHAR);
     gtk_label_set_justify(GTK_LABEL(lbl), GTK_JUSTIFY_CENTER);
     gtk_misc_set_alignment(GTK_MISC(lbl), 0.5, 0.0);
-    gtk_widget_set_size_request(lbl, TILE_LABEL_WIDTH, -1);
+    /* width-chars (NOT a pixel size-request) is what makes this centre: per
+       gtklabel.c get_layout_location(), width_chars>0 positions the text by its
+       real width, whereas a size-request centres the *requested* width and leaves
+       the text adrift. It also sets the wrap width, so long names wrap onto as
+       many lines as needed (no clipping), and nothing reacts to hover. */
+    gtk_label_set_width_chars(GTK_LABEL(lbl), TILE_LABEL_CHARS);
+    gtk_label_set_max_width_chars(GTK_LABEL(lbl), TILE_LABEL_CHARS);
     gtk_box_pack_start(GTK_BOX(box), lbl, FALSE, FALSE, 0);
 
     gtk_container_add(GTK_CONTAINER(btn), box);
 
     const char *desc = g_app_info_get_description(G_APP_INFO(info));
-    if (desc && *desc)
-        gtk_widget_set_tooltip_text(btn, desc);
+    gtk_widget_set_tooltip_text(btn, (desc && *desc)
+                                ? desc : g_app_info_get_name(G_APP_INFO(info)));
 
     g_object_set_data_full(G_OBJECT(btn), "appinfo",
                            g_object_ref(info), g_object_unref);
@@ -254,7 +264,13 @@ static void add_group_section(GtkWidget *vb, const char *title, GList *items)
         gtk_table_attach_defaults(GTK_TABLE(table), make_tile(l->data),
                                   col, col + 1, row, row + 1);
     }
-    gtk_box_pack_start(GTK_BOX(vb), table, FALSE, FALSE, 0);
+    /* Don't let the vbox stretch the table to the full window width -- that makes
+       each homogeneous cell far wider than a tile, so the icon+label block looks
+       adrift in its hover box. A left-aligned, non-expanding alignment gives the
+       table its natural width, so a cell == a tile and content sits centred. */
+    GtkWidget *align = gtk_alignment_new(0.0, 0.0, 0.0, 0.0);
+    gtk_container_add(GTK_CONTAINER(align), table);
+    gtk_box_pack_start(GTK_BOX(vb), align, FALSE, FALSE, 0);
 }
 
 /* ----- window geometry persistence --------------------------------------
